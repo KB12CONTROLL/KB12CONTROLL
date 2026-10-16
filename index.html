@@ -1,0 +1,160 @@
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KB12CONTROLL</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#070b12;color:#eef7ff;font:16px Arial,sans-serif}
+header{padding:22px;background:#0c1726;border-bottom:1px solid #087eac}
+h1{color:#00d9ff;margin:0}
+main{max-width:900px;margin:25px auto;padding:15px}
+.card{background:#101b2b;border:1px solid #243b54;border-radius:14px;padding:20px;margin-bottom:18px}
+input,button{width:100%;padding:12px;margin:7px 0;border-radius:8px}
+input{background:#080f19;color:white;border:1px solid #34506b}
+button{background:#087ea4;color:white;border:0;font-weight:bold}
+button:disabled{opacity:.5}
+small{color:#9bb2ca}
+nav{display:flex;flex-wrap:wrap;gap:8px}
+nav button{width:auto;flex:1}
+.hidden{display:none}
+.stat{font-size:25px;color:#00d9ff;font-weight:bold}
+</style>
+</head>
+<body>
+<header>
+<h1>KB12CONTROLL</h1>
+<p>Controle inteligente de almoxarifado</p>
+</header>
+<main>
+<section id="config" class="card">
+<h2>Conectar ao sistema</h2>
+<label>URL do projeto</label>
+<input id="url" value="https://jkcplcfdipupaghmlcix.supabase.co">
+<label>Chave pública anon/publishable</label>
+<input id="key" placeholder="Cole aqui sua chave pública" autocomplete="off">
+<button id="connect">Conectar</button>
+<p id="msg"><small>Nunca informe uma chave service_role ou secret.</small></p>
+</section>
+
+<section id="login" class="card hidden">
+<h2>Login de usuário</h2>
+<input id="email" type="email" placeholder="E-mail" autocomplete="username">
+<input id="password" type="password" placeholder="Senha" autocomplete="current-password">
+<button id="enter">Entrar</button>
+<p id="loginmsg"></p>
+</section>
+
+<section id="app" class="hidden">
+<div class="card">
+<p>Usuário: <strong id="who"></strong></p>
+<button id="logout">Sair</button>
+<nav>
+<button data-page="home">Painel</button>
+<button data-page="products">Produtos</button>
+<button data-page="requests">Requisições</button>
+</nav>
+</div>
+<section id="home" class="card">
+<h2>Painel geral</h2>
+<p>Produtos ativos</p><div id="count" class="stat">—</div>
+<p>Quantidade total em estoque</p><div id="stock" class="stat">—</div>
+<p>Requisições pendentes</p><div id="pending" class="stat">—</div>
+<button id="refresh">Atualizar indicadores</button>
+</section>
+
+<section id="products" class="card hidden">
+<h2>Produtos em estoque</h2>
+<div id="productlist">Carregue os produtos.</div>
+</section>
+
+<section id="requests" class="card hidden">
+<h2>Nova requisição</h2>
+<label>Produto</label><select id="product" style="width:100%;padding:12px"></select>
+<label>Quantidade</label><input id="qty" type="number" min="0.01" step="0.01">
+<label>Setor</label><input id="sector" placeholder="Nome do setor">
+<label>Observações</label><input id="notes" placeholder="Opcional">
+<button id="send">Enviar requisição</button>
+<p id="requestmsg"></p>
+<h3>Minhas requisições</h3>
+<div id="requestlist"></div>
+</section>
+</section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+let db,user,profile,items=[];
+const $=id=>document.getElementById(id);
+function message(id,text){$(id).textContent=text}
+$('connect').onclick=async()=>{
+try{
+const url=$('url').value.trim().replace(/\/$/,'');
+const key=$('key').value.trim();
+if(!key)throw Error('Cole a chave pública do Supabase.');
+db=window.supabase.createClient(url,key);
+const {error}=await db.auth.getSession();
+if(error)throw error;
+$('config').classList.add('hidden');
+$('login').classList.remove('hidden');
+message('msg','Conexão preparada.');
+}catch(e){message('msg','Erro: '+e.message)}
+};
+$('enter').onclick=async()=>{
+try{
+const {data,error}=await db.auth.signInWithPassword({
+email:$('email').value.trim(),password:$('password').value
+});
+if(error)throw error;
+user=data.user;
+const result=await db.from('profiles')
+.select('nome,setor,papel').eq('id',user.id).maybeSingle();
+if(result.error)throw result.error;
+profile=result.data;
+if(!profile)throw Error('Usuário sem perfil cadastrado. Vincule o usuário à tabela profiles.');
+$('login').classList.add('hidden');
+$('app').classList.remove('hidden');
+$('who').textContent=profile.nome+' ('+profile.papel+')';
+await load();
+}catch(e){message('loginmsg','Não foi possível entrar: '+e.message)}
+};
+async function load(){
+const a=await db.from('products').select('id,codigo,nome,unidade,quantidade,estoque_minimo').eq('ativo',true).order('nome');
+if(a.error)throw a.error;
+items=a.data||[];
+$('count').textContent=items.length;
+$('stock').textContent=items.reduce((s,p)=>s+Number(p.quantidade),0);
+$('productlist').innerHTML=items.map(p=>'<p>'+esc(p.nome)+' — saldo '+p.quantidade+' '+esc(p.unidade)+' <small>(mínimo '+p.estoque_minimo+')</small></p>').join('')||'Nenhum produto cadastrado.';
+$('product').innerHTML=items.map(p=>'<option value="'+p.id+'">'+esc(p.nome)+' (saldo '+p.quantidade+')</option>').join('');
+const r=await db.from('requisitions').select('numero,status,data,quantidade,products(nome)').order('criado_em',{ascending:false});
+if(r.error)throw r.error;
+const own=(r.data||[]).filter(x=>x.responsavel===user.id);
+$('pending').textContent=(r.data||[]).filter(x=>x.status==='pendente').length;
+$('requestlist').innerHTML=own.map(x=>'<p>Pedido #'+x.numero+' — '+esc(x.products?.nome||'Produto')+' — '+x.quantidade+' — '+esc(x.status)+'</p>').join('')||'Nenhuma requisição encontrada.';
+}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+$('send').onclick=async()=>{
+try{
+const {error}=await db.from('requisitions').insert({
+data:new Date().toISOString().slice(0,10),
+produto_id:$('product').value,
+quantidade:Number($('qty').value),
+setor:$('sector').value.trim(),
+responsavel:user.id,
+observacoes:$('notes').value.trim()||null
+});
+if(error)throw error;
+message('requestmsg','Requisição enviada.');
+await load();
+}catch(e){message('requestmsg','Erro: '+e.message)}
+};
+$('refresh').onclick=()=>load().catch(e=>message('msg',e.message));
+$('logout').onclick=async()=>{await db.auth.signOut();location.reload()};
+document.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>{
+['home','products','requests'].forEach(id=>$(id).classList.toggle('hidden',id!==b.dataset.page));
+});
+</script>
+</body>
+</html>
